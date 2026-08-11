@@ -32,7 +32,6 @@ jobs:
           net user Admin "$p" /add /Y
           net localgroup Administrators Admin /add
           net localgroup "Remote Desktop Users" Admin /add
-          wmic UserAccount WHERE "Name='Admin'" SET Disabled="FALSE"
           Write-Host "User Admin created with RDP access"
 
       - name: Install Tailscale
