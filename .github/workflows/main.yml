@@ -22,63 +22,50 @@ jobs:
             dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Generate Administrator Password
+      - name: Generate Admin Password
         run: |
-          function Generate-StrongPassword {
-            param([int]$Length=24)
-            $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
-            $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-            $bytes = New-Object byte[]($Length)
-            $rng.GetBytes($bytes)
-            $password = -join (0..($Length-1) | ForEach-Object { $chars[$bytes[$_] % $chars.Length] })
-            return $password
+          function GenPass { param([int]$L=24)
+            $c='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
+            $rng=New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+            $b=New-Object byte[]($L); $rng.GetBytes($b)
+            return -join (0..($L-1)|%{$c[$b[$_]%$c.Length]})
           }
-          $password = Generate-StrongPassword 24
-          Add-Content -Path $env:GITHUB_ENV -Value "ADMIN_PASS=$password"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## RDP Login Credentials"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Username: Admin"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Password: $password"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "Admin" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+          $p=GenPass 24
+          echo "ADMIN_PASS=$p" >> $env:GITHUB_ENV
+          $sp=ConvertTo-SecureString $p -AsPlainText -Force
+          New-LocalUser -Name "Admin" -Password $sp -AccountNeverExpires -PasswordNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "Admin"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Admin"
 
       - name: Install Tailscale
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $tsUrl="https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $ip="$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $ip
+          Start-Process msiexec.exe -ArgumentList "/i","`"$ip`"","/quiet","/norestart" -Wait
+          Remove-Item $ip -Force
 
       - name: Connect to Tailscale
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          if (-not $tsIP) { Write-Error "Tailscale IP not assigned"; exit 1 }
-          Add-Content -Path $env:GITHUB_ENV -Value "TAILSCALE_IP=$tsIP"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Tailscale IP: $tsIP"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp
+          $tsIP=$null
+          for ($i=0; $i -lt 10 -and -not $tsIP; $i++) { $tsIP=& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4; Start-Sleep 5 }
+          if (-not $tsIP) { exit 1 }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
       - name: Verify RDP
         run: |
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) { Write-Error "RDP port 3389 not reachable"; exit 1 }
+          $r=Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $r.TcpTestSucceeded) { exit 1 }
 
-      - name: Maintain Connection
+      - name: Send Credentials to VPS
         run: |
-          Write-Host "========================================"
-          Write-Host "RDP ACCESS INFO"
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: Admin"
-          Write-Host "Password: $env:ADMIN_PASS"
-          Write-Host "========================================"
+          $body = "tailscale_ip=$env:TAILSCALE_IP`nusername=Admin`npassword=$env:ADMIN_PASS"
+          Invoke-WebRequest -Uri "http://100.80.155.79:9999" -Method POST -Body $body -ContentType "text/plain"
+
+      - name: Keep Alive
+        run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Cancel to stop"
-              Start-Sleep -Seconds 300
+            Write-Host "[$(Get-Date)] RDP Active at $env:TAILSCALE_IP"
+            Start-Sleep -Seconds 300
           }
