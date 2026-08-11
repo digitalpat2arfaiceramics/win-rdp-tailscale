@@ -36,11 +36,12 @@ jobs:
           $password = Generate-StrongPassword 24
           Add-Content -Path $env:GITHUB_ENV -Value "ADMIN_PASS=$password"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## RDP Login Credentials"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Username: Administrator"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Username: Admin"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Password: $password"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          Set-LocalUser -Name "Administrator" -Password $securePass
-          Enable-LocalUser -Name "Administrator"
+          New-LocalUser -Name "Admin" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "Admin"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Admin"
 
       - name: Install Tailscale
         run: |
@@ -74,7 +75,7 @@ jobs:
           Write-Host "========================================"
           Write-Host "RDP ACCESS INFO"
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: Administrator"
+          Write-Host "Username: Admin"
           Write-Host "Password: $env:ADMIN_PASS"
           Write-Host "========================================"
           while ($true) {
