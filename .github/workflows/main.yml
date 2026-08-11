@@ -11,61 +11,50 @@ jobs:
     steps:
       - name: Enable Remote Desktop
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 1 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" -Value 1 -Force
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v SecurityLayer /t REG_DWORD /d 1 /f
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Generate Admin Password
+      - name: Create Admin User
         run: |
-          function GenPass { param([int]$L=24)
-            $c='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
-            $rng=New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-            $b=New-Object byte[]($L); $rng.GetBytes($b)
-            return -join (0..($L-1)|%{$c[$b[$_]%$c.Length]})
+          try {
+            $p = [System.Web.Security.Membership]::GeneratePassword(24, 6)
+          } catch {
+            $c = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
+            $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+            $b = New-Object byte[](24); $rng.GetBytes($b)
+            $p = -join (0..23 | % { $c[$b[$_] % $c.Length] })
           }
-          $p=GenPass 24
-          echo "ADMIN_PASS=$p" >> $env:GITHUB_ENV
-          $sp=ConvertTo-SecureString $p -AsPlainText -Force
-          New-LocalUser -Name "Admin" -Password $sp -AccountNeverExpires -PasswordNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "Admin"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Admin"
+          Add-Content -Path $env:GITHUB_ENV -Value "ADMIN_PASS=$p"
+          net user Admin "$p" /add /Y
+          net localgroup Administrators Admin /add
+          net localgroup "Remote Desktop Users" Admin /add
+          wmic UserAccount WHERE "Name='Admin'" SET Disabled="FALSE"
+          Write-Host "User Admin created with RDP access"
 
       - name: Install Tailscale
         run: |
-          $tsUrl="https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $ip="$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $ip
-          Start-Process msiexec.exe -ArgumentList "/i","`"$ip`"","/quiet","/norestart" -Wait
-          Remove-Item $ip -Force
+          curl.exe -sLo $env:TEMP\tailscale.msi https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi
+          msiexec /i $env:TEMP\tailscale.msi /quiet /norestart
+          Start-Sleep -Seconds 15
 
       - name: Connect to Tailscale
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp
-          $tsIP=$null
-          for ($i=0; $i -lt 10 -and -not $tsIP; $i++) { $tsIP=& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4; Start-Sleep 5 }
+          $tsIP = $null
+          for ($i=0; $i -lt 10 -and -not $tsIP; $i++) { $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4; Start-Sleep 5 }
           if (-not $tsIP) { exit 1 }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Add-Content -Path $env:GITHUB_ENV -Value "TAILSCALE_IP=$tsIP"
 
-      - name: Verify RDP
-        run: |
-          $r=Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $r.TcpTestSucceeded) { exit 1 }
-
-      - name: Send Credentials to VPS
+      - name: Send Credentials
         run: |
           $body = "tailscale_ip=$env:TAILSCALE_IP`nusername=Admin`npassword=$env:ADMIN_PASS"
           Invoke-WebRequest -Uri "http://100.80.155.79:9999" -Method POST -Body $body -ContentType "text/plain"
 
       - name: Keep Alive
         run: |
-          while ($true) {
-            Write-Host "[$(Get-Date)] RDP Active at $env:TAILSCALE_IP"
-            Start-Sleep -Seconds 300
-          }
+          Write-Host "RDP READY - IP:$env:TAILSCALE_IP User:Admin Pass:$env:ADMIN_PASS"
+          while ($true) { Start-Sleep -Seconds 300 }
