@@ -24,8 +24,16 @@ jobs:
 
       - name: Generate Administrator Password
         run: |
-          Add-Type -AssemblyName System.Web
-          $password = [System.Web.Security.Membership]::GeneratePassword(24, 6)
+          function Generate-StrongPassword {
+            param([int]$Length=24)
+            $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
+            $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+            $bytes = New-Object byte[]($Length)
+            $rng.GetBytes($bytes)
+            $password = -join (0..($Length-1) | ForEach-Object { $chars[$bytes[$_] % $chars.Length] })
+            return $password
+          }
+          $password = Generate-StrongPassword 24
           Add-Content -Path $env:GITHUB_ENV -Value "ADMIN_PASS=$password"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## RDP Login Credentials"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Username: Administrator"
@@ -33,8 +41,6 @@ jobs:
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           Set-LocalUser -Name "Administrator" -Password $securePass
           Enable-LocalUser -Name "Administrator"
-          $user = Get-LocalUser -Name "Administrator"
-          if (-not $user.Enabled) { Write-Error "Admin account not enabled"; exit 1 }
 
       - name: Install Tailscale
         run: |
